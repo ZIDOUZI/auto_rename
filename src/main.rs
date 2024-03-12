@@ -1,31 +1,46 @@
+use std::collections::HashMap;
 use glob::glob;
 use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use tree_magic;
-static MIME: &str = std::include_str!("./mimes.json");
 
-fn rename_file(file: &PathBuf, mt: &Value) {
+static MIME: &str = include_str!("./mimes.json");
+
+#[derive(PartialEq)]
+enum Silence {
+    No,
+    OnlyErrors,
+    Yes,
+}
+
+fn rename_file(file: &PathBuf, mt: &Value, silence: &Silence) {
     let mut cp = PathBuf::from(file);
     let f = tree_magic::from_filepath(file);
     let ext = &mt[f];
-    let ext = if ext.is_null() {
-        ".bin"
+    if ext.is_null() {
+        if *silence != Silence::Yes {
+            println!("Could not find extension for {:?}", file);
+        }
     } else {
-        ext.as_str().unwrap()
+        cp.set_extension(ext.as_str().unwrap());
+        if file.eq(&cp) {
+            if silence == &Silence::No {
+                println!("Skipping {:?}", file);
+            }
+        } else {
+            if silence != &Silence::Yes {
+                println!("{:?} => {:?}", file, cp);
+            }
+            fs::rename(file, cp).unwrap_or_else(|_| if silence != &Silence::Yes { println!("could not rename {:#?}", file) });
+        }
     };
-    cp.set_extension(ext);
-    if file.eq(&cp) {
-        println!("Skipping {:?}", file);
-    } else {
-        println!("{:?} => {:?}", file, cp);
-        fs::rename(file, cp).unwrap_or_else(|_| println!("could not rename {:#?}", file));
-    }
 }
-fn walk(folder: &str, mt: &Value) {
-    let p = PathBuf::from(folder);
-    if !p.exists() {
+
+fn walk(path: &str, mt: &Value, silence: &Silence) {
+    let p = PathBuf::from(path);
+    if !p.exists() && silence != &Silence::Yes {
         println!("{} does not exist!", p.display())
     }
 
@@ -36,18 +51,45 @@ fn walk(folder: &str, mt: &Value) {
             let f_path = i.unwrap();
             let is_dir = f_path.is_dir();
             if is_dir {
-                walk(f_path.to_str().expect("Could not convert to string"), mt);
+                walk(f_path.to_str().expect("Could not convert to string"), mt, silence);
             } else {
-                rename_file(&f_path, mt);
+                rename_file(&f_path, mt, silence);
             }
         }
     } else {
-        rename_file(&p, mt)
+        rename_file(&p, mt, silence)
     }
 }
+
 fn main() {
     let mime_types: Value = serde_json::from_str(MIME).expect("Could not parse json");
-    let mut args = env::args();
-    let folder = args.nth(1).expect("Pass a folder!");
-    walk(&folder, &mime_types);
+    // let mut args = env::args();
+    // let folder = args.nth(1).expect("Pass a folder!");
+    let mut path = String::new();
+    let mut silence = Silence::OnlyErrors;
+    let mut params = env::args();
+    let mut len = params.len();
+    while let Some(p) = params.next() {
+        print!("{} ", p);
+        len -= 1;
+        match p.as_str() {
+            "-s" => silence = Silence::No,
+            "-S" => silence = Silence::Yes,
+            "-p" => path = params.next().expect("Use -p with a path!"),
+            _ => if len != 0 {
+                println!("Enter a folder or file or press enter to pass this folder:");
+                std::io::stdin()
+                    .read_line(&mut path)
+                    .expect("Could not read line");
+                path = path.trim().to_string();
+                if path == "" {
+                    path = p
+                }
+            },
+        }
+    }
+    walk(&path, &mime_types, &silence);
+    // wait for user to press enter
+    println!("Press any key to exit");
+    std::io::stdin().read_line(&mut path).expect("Could not read line");
 }
